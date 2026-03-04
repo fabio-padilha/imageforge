@@ -1,0 +1,150 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ImageForge — docker-compose.yml
+#  VARIANTE B: Traefik + App no mesmo stack (tudo em um)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+#  ✅ COMO USAR NO PORTAINER:
+#  1) Stacks → Add Stack → cole este arquivo
+#  2) Altere DOMAIN e LETSENCRYPT_EMAIL
+#  3) IMPORTANTE: Portas 80 e 443 devem estar livres no host!
+#  4) Deploy!
+#
+#  ℹ️  ACME CHALLENGE: usamos HTTP-01 (padrão, não precisa de DNS API).
+#     O Traefik escuta na porta 80, responde ao desafio do Let's Encrypt,
+#     e redireciona todo o resto para HTTPS.
+#
+#  🔒 DASHBOARD: desabilitado por padrão. Para habilitar com senha:
+#     Descomente as linhas marcadas com [DASHBOARD] e gere um hash:
+#     echo $(htpasswd -nb admin SUA_SENHA) | sed -e s/\\$/\\$\\$/g
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+version: "3.8"
+
+# ─── Variáveis ──────────────────────────────────────────────────────────────
+x-vars:
+  domain:            &DOMAIN            img.seudominio.com
+  email:             &EMAIL             seuemail@dominio.com
+  # [DASHBOARD] Gere com: echo $(htpasswd -nb admin SUA_SENHA) | sed -e s/\\$/\\$\\$/g
+  dashboard_auth:    &DASH_AUTH         "admin:$$apr1$$xyz$$abc123"
+
+services:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  #  TRAEFIK
+  # ════════════════════════════════════════════════════════════════════════════
+  traefik:
+    image: traefik:v3.1
+    restart: unless-stopped
+    command:
+      # ── Global ─────────────────────────────────────────────────────────────
+      - "--log.level=INFO"
+      - "--accesslog=true"
+      - "--api.dashboard=false"       # [DASHBOARD] mude para true e descomente labels abaixo
+
+      # ── Providers ──────────────────────────────────────────────────────────
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=imageforge_net"
+
+      # ── Entrypoints ────────────────────────────────────────────────────────
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Redireciona todo HTTP → HTTPS globalmente
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
+
+      # ── Let's Encrypt (HTTP-01 Challenge) ──────────────────────────────────
+      # HTTP-01: Traefik responde na porta 80 ao desafio da CA.
+      # Funciona desde que o domínio aponte para o IP do servidor e porta 80 esteja acessível.
+      - "--certificatesresolvers.letsencrypt.acme.email=seuemail@dominio.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+
+      # ── Para testes: use o servidor staging do LE (evita rate limit) ───────
+      # - "--certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+
+    ports:
+      - "80:80"
+      - "443:443"
+      # [DASHBOARD] - "8090:8080"   # dashboard na porta 8090 (só internamente)
+
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "letsencrypt_data:/letsencrypt"
+
+    networks:
+      - imageforge_net
+
+    labels:
+      - "traefik.enable=true"
+
+      # ── [DASHBOARD] Descomente para ativar dashboard protegido ─────────────
+      # - "traefik.http.routers.dashboard.rule=Host(`traefik.seudominio.com`)"
+      # - "traefik.http.routers.dashboard.entrypoints=websecure"
+      # - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      # - "traefik.http.routers.dashboard.service=api@internal"
+      # - "traefik.http.routers.dashboard.middlewares=dash-auth"
+      # - "traefik.http.middlewares.dash-auth.basicauth.users=admin:$$apr1$$xyz$$abc123"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  #  IMAGEFORGE APP
+  # ════════════════════════════════════════════════════════════════════════════
+  imageforge:
+    image: ghcr.io/seu-usuario/imageforge:latest
+    # OU build local:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - traefik
+
+    environment:
+      PORT: "8080"
+      MAX_FILE_MB: "25"
+      MAX_BATCH_MB: "200"
+      CLEANUP_MINUTES: "60"
+      CONCURRENCY: "3"
+      NODE_ENV: production
+
+    volumes:
+      - imageforge_tmp:/tmp/imageforge
+
+    networks:
+      - imageforge_net
+
+    labels:
+      - "traefik.enable=true"
+
+      # ── Router HTTPS ────────────────────────────────────────────────────────
+      - "traefik.http.routers.imageforge.rule=Host(`img.seudominio.com`)"
+      - "traefik.http.routers.imageforge.entrypoints=websecure"
+      - "traefik.http.routers.imageforge.tls=true"
+      - "traefik.http.routers.imageforge.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.imageforge.service=imageforge-svc"
+
+      # ── Service ─────────────────────────────────────────────────────────────
+      - "traefik.http.services.imageforge-svc.loadbalancer.server.port=8080"
+
+      # ── Rede ────────────────────────────────────────────────────────────────
+      - "traefik.docker.network=imageforge_net"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+# ─── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  letsencrypt_data:   # Armazena os certificados (NUNCA delete!)
+  imageforge_tmp:
+
+# ─── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  imageforge_net:
+    driver: bridge

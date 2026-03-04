@@ -1,0 +1,87 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ImageForge — docker-compose.yml
+#  VARIANTE A: Traefik já instalado em outro stack (rede externa traefik_public)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+#  ✅ COMO USAR NO PORTAINER:
+#  1) Stacks → Add Stack → cole este arquivo
+#  2) Altere APENAS as 2 variáveis abaixo (DOMAIN e LETSENCRYPT_EMAIL)
+#  3) Certifique-se de que a rede 'traefik_public' já existe
+#     Se não existir: docker network create traefik_public
+#  4) Deploy!
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── Variáveis que você DEVE alterar ─────────────────────────────────────────
+x-env: &app-env
+  # Domínio do app (sem https://)
+  DOMAIN: img.seudominio.com
+  # E-mail para o certificado Let's Encrypt
+  LETSENCRYPT_EMAIL: seuemail@dominio.com
+
+  # ─── Configurações do app (opcionais) ───────────────────────────────────────
+  PORT: "8080"
+  MAX_FILE_MB: "25"         # Limite por arquivo em MB
+  MAX_BATCH_MB: "200"       # Limite total do lote em MB
+  CLEANUP_MINUTES: "60"     # Deletar arquivos temporários após X minutos
+  CONCURRENCY: "3"          # Imagens processadas em paralelo
+
+# ─── Versão ──────────────────────────────────────────────────────────────────
+version: "3.8"
+
+services:
+  imageforge:
+    image: ghcr.io/seu-usuario/imageforge:latest
+    # OU use build: . para buildar localmente
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+
+    # Volume para arquivos temporários (persiste entre restarts, mas cleanup automático os remove)
+    volumes:
+      - imageforge_tmp:/tmp/imageforge
+
+    networks:
+      - traefik_public  # Rede externa onde o Traefik escuta
+
+    labels:
+      # ── Habilita o Traefik para este container ─────────────────────────────
+      - "traefik.enable=true"
+
+      # ── Router HTTPS ────────────────────────────────────────────────────────
+      - "traefik.http.routers.imageforge.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.imageforge.entrypoints=websecure"
+      - "traefik.http.routers.imageforge.tls=true"
+      - "traefik.http.routers.imageforge.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.imageforge.service=imageforge-svc"
+
+      # ── Redireciona HTTP → HTTPS ────────────────────────────────────────────
+      - "traefik.http.routers.imageforge-http.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.imageforge-http.entrypoints=web"
+      - "traefik.http.routers.imageforge-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+
+      # ── Service: porta interna do container ────────────────────────────────
+      - "traefik.http.services.imageforge-svc.loadbalancer.server.port=8080"
+
+      # ── Rede que o Traefik deve usar para se comunicar ─────────────────────
+      - "traefik.docker.network=traefik_public"
+
+    # Healthcheck
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  imageforge_tmp:
+
+networks:
+  traefik_public:
+    external: true  # Rede já criada pelo stack do Traefik
