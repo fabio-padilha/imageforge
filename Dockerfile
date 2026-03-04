@@ -1,8 +1,8 @@
 # ── Stage 1: Build Frontend ──────────────────────────────────────
 FROM node:20-alpine AS fe
 WORKDIR /fe
-COPY frontend/package*.json ./
-RUN npm ci
+COPY frontend/package.json ./
+RUN npm install
 COPY frontend/ ./
 RUN npm run build
 
@@ -10,11 +10,11 @@ RUN npm run build
 FROM node:20-alpine AS be
 WORKDIR /be
 RUN apk add --no-cache python3 make g++ vips-dev
-COPY backend/package*.json ./
-RUN npm ci --omit=dev
+COPY backend/package.json ./
+RUN npm install --omit=dev
 COPY backend/ ./
 
-# ── Stage 3: Imagem final (mínima) ──────────────────────────────
+# ── Stage 3: Imagem final ────────────────────────────────────────
 FROM node:20-alpine
 RUN apk add --no-cache vips-dev && \
     addgroup -S app && adduser -S app -G app
